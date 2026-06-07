@@ -1,50 +1,32 @@
 import json
 import random
 import uuid
-import gspread
 import requests
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
 
 app = Flask(__name__)
 
 # =================================================================
-# ⚠️ [필수 수정] 여기에 본인의 구글 엑셀 고유 ID를 넣어주세요!
-SPREADSHEET_ID = "1BfVlyrK3H13DK-soS42P1aU_4Bnt8T5c1wryIP7BF8A"
+# ⚠️ [필수 수정] 여기에 방금 구글 배포에서 복사한 '웹 앱 URL' 주소를 넣어주세요!
+GOOGLE_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzmqGWxKe3ur3W-OnRy-rdVnkG4DrlX5LNDOYtFVowtZ-X4hkvSjiVuHZ810ruHRaD1PA/exec"
 # =================================================================
 
 def load_data():
     try:
-        # 최신 gspread 버전에 맞춘 무인증 공개 시트 접근 방식입니다.
-        url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
-        res = requests.get(url)
+        res = requests.get(GOOGLE_WEB_APP_URL)
         if res.status_code == 200:
-            # 엑셀의 첫 번째 칸(A1)에 적힌 JSON 데이터를 가져옵니다.
-            text = res.text.strip()
-            if text.startswith('"') and text.endswith('"'):
-                text = text[1:-1].replace('""', '"')
-            return json.loads(text) if text else {}
+            return res.json()
     except Exception as e:
         print(f"구글 시트 읽기 실패: {e}")
     return {}
 
 def save_data(data):
     try:
-        # 데이터 저장은 gspread의 기본 주소 접근 방식을 사용하여 안정성을 높였습니다.
-        gc = gspread.api_key("")  # 공개 편집 권한 우회
-        sh = gc.open_by_key(SPREADSHEET_ID)
-        sheet = sh.get_worksheet(0)
-        sheet.update_acell('A1', json.dumps(data, ensure_ascii=False))
+        requests.post(GOOGLE_WEB_APP_URL, json=data)
     except Exception as e:
-        # 우회 방식 실패 시 가상 브라우저 방식으로 재시도
-        try:
-            url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/values/A1?valueInputOption=RAW"
-            headers = {"Content-Type": "application/json"}
-            payload = {"values": [[json.dumps(data, ensure_ascii=False)]]}
-            requests.put(url, json=payload, headers=headers)
-        except Exception as ex:
-            print(f"구글 시트 저장 실패: {ex}")
+        print(f"구글 시트 저장 실패: {e}")
 
-# 줄바꿈 에러 방지용 한 줄 스타일 코드
+# Render 줄바꿈 에러 방지용 한 줄 스타일 코드
 COMMON_STYLE = "<style>body { font-family: 'Malgun Gothic', sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #333; } .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); } h1, h2 { color: #1e3a8a; text-align: center; } .form-group { margin-bottom: 15px; } label { display: block; margin-bottom: 5px; font-weight: bold; } input[type='text'], input[type='number'] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; } button { width: 100%; padding: 12px; background-color: #2563eb; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold; } button:hover { background-color: #1d4ed8; } .event-card { border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; margin-top: 20px; background-color: #fff; position: relative; } .btn-close { background-color: #10b981; margin-bottom: 5px; } .btn-close:hover { background-color: #059669; } .btn-delete { background-color: #ef4444; } .btn-delete:hover { background-color: #dc2626; } .link-box { background: #f3f4f6; padding: 10px; border-radius: 6px; word-break: break-all; font-size: 14px; margin: 10px 0; border: 1px dashed #cbd5e1; } .badge { display: inline-block; padding: 4px 8px; background: #dbeafe; color: #1e40af; border-radius: 4px; font-size: 12px; font-weight: bold; } .badge-closed { background: #fee2e2; color: #991b1b; }</style>"
 
 ADMIN_TEMPLATE = """<!DOCTYPE html>
@@ -105,4 +87,69 @@ USER_TEMPLATE = """<!DOCTYPE html>
         {% else %}
             <form action="/submit/{{ event_id }}" method="POST">
                 <div class="form-group"><label>📝 내 닉네임</label><input type="text" name="username" required></div>
-                <button type="
+                <button type="submit">이벤트 응모하기 🚀</button>
+            </form>
+        {% endif %}
+    </div>
+</body>
+</html>"""
+
+@app.route("/")
+def home(): return redirect(url_for("admin_page"))
+
+@app.route("/admin")
+def admin_page():
+    events = load_data()
+    return render_template_string(ADMIN_TEMPLATE, events=events, style=COMMON_STYLE)
+
+@app.route("/admin/create", methods=["POST"])
+def create_event():
+    events = load_data()
+    prize_name = request.form.get("prize_name")
+    winner_count = int(request.form.get("winner_count", 1))
+    event_id = str(uuid.uuid4())[:8]
+    user_url = request.host_url + f"event/{event_id}"
+    events[event_id] = {
+        "prize_name": prize_name, "winner_count": winner_count,
+        "participants": [], "winners": [], "closed": False, "user_url": user_url
+    }
+    save_data(events)
+    return redirect(url_for("admin_page"))
+
+@app.route("/admin/close/<event_id>", methods=["POST"])
+def close_event(event_id):
+    events = load_data()
+    if event_id in events and not events[event_id]["closed"]:
+        ev = events[event_id]
+        ev["closed"] = True
+        if ev["participants"]:
+            ev["winners"] = random.sample(ev["participants"], min(len(ev["participants"]), ev["winner_count"]))
+        save_data(events)
+    return redirect(url_for("admin_page"))
+
+@app.route("/admin/delete/<event_id>", methods=["POST"])
+def delete_event(event_id):
+    events = load_data()
+    if event_id in events: del events[event_id]
+    save_data(events)
+    return redirect(url_for("admin_page"))
+
+@app.route("/event/<event_id>")
+def user_page(event_id):
+    events = load_data()
+    if event_id not in events: return "<h3>존재하지 않는 이벤트입니다.</h3>", 404
+    return render_template_string(USER_TEMPLATE, event=events[event_id], event_id=event_id, style=COMMON_STYLE)
+
+@app.route("/submit/<event_id>", methods=["POST"])
+def submit_entry(event_id):
+    events = load_data()
+    if event_id not in events: return "이벤트가 없습니다.", 404
+    ev = events[event_id]
+    username = request.form.get("username", "").strip()
+    if username and username not in ev["participants"]:
+        ev["participants"].append(username)
+        save_data(events)
+    return f'<script>alert("{username}님 응모 완료!"); window.location.href = "/event/{event_id}";</script>'
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
